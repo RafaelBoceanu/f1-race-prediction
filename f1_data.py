@@ -1,240 +1,219 @@
 import requests
 import pandas as pd
 import numpy as np
-from typing import List, Tuple, Dict
+from typing import List, Dict, Optional
 import time
 
+BASE_URL = "https://f1api.dev/api"
+
 class F1DataFetcher:
-    BASE_URL = "https://ergast.com/api/f1"
 
     def __init__(self, start_year: int = 2015, end_year: int = 2025):
         self.start_year = start_year
         self.end_year = end_year
-        self.races_data = []
-        self.results_data= []
-        self.driver_standings = {}
-        self.constructor_standings = {}
+        self.rounds_per_year = {
+            2015: 19, 2016: 21, 2017: 20, 2018: 21, 2019: 21,
+            2020: 17, 2021: 22, 2022: 22, 2023: 22, 2024: 24,
+            2025: 24, 2026: 24,
+        }
 
-    def fetch_races(self) -> pd.DataFrame:
-        all_races = []
-
-        # Loop through each year in the range
-        for year in range(self.start_year, self.end_year + 1):
-            url = f"{self.BASE_URL}/{year}.json"
-
-            try:
-                response = requests.get(url)
-                response.raise_for_status() # Raise error if status != 200
-
-                data = response.json()
-
-                races = data.get('MRData', {}).get('RaceTable', {}).get('Races', [])
-
-                for race in races:
-                    all_races.append({
-                        'raceId': race.get('season'),
-                        'year': int(race.get('season')),
-                        'round': int(race.get('round')),
-                        'name': race.get('name'),
-                        'circuit': race.get('Circuit', {}).get('circuitId'),
-                        'date': race.get('date'),
-                        'lat': float(race.get('Circuit', {}).get('Location', {}).get('lat', 0)),
-                        'lng': float(race.get('Circuit', {}).get('Location', {}).get('long', 0)),
-                    })
-
-                    print(f"Fetched {len(races)} races from {year}")
-
-                    time.sleep(0.5) # Sleep to avoid hitting API rate limits
-
-            except Exception as e:
-                print(f"Error fetching races for {year}: {e}")
-
-        return pd.DataFrame(all_races)
-    
-    def fetch_results(self, year: int, round_num: int) -> List[Dict]:
-        url = f"{self.BASE_URL}/{year}/{round_num}/results.json"
-
+    def _get(self, path: str, params: Optional[Dict] = None) -> Optional[Dict]:
+        url = f"{BASE_URL}/{path}"
         try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status() # Raise error if status != 200
-            data = response.json()
-
-            results = data.get('MRData', {}).get('RaceTable', {}).get('Races', [{}])[0].get('Results', [])
-
-            time.sleep(0.3)
-            return results
-        
+            response = requests.get(url, params=params or {}, timeout=15)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.HTTPError as e:
+            # 404 normal for rounds that don't exist yet
+            if response.status_code != 404:
+                print(f"  HTTP error {response.status_code} for {url}: {e}")
+            return None
         except Exception as e:
-            print(f"Error fetching results for {year} round {round_num}: {e}")
+            print(f"  Error fetching {url}: {e}")
+            return None
+
+    def fetch_race_results(self, year: int, round_num: int) -> List[Dict]:
+        data = self._get(f"{year}/{round_num}/race", {"limit": 30})
+        if not data or "races" not in data:
             return []
+
+        race_meta = data["races"]
+        circuit_data = race_meta.get("circuit", [])
+
+        if isinstance(circuit_data, list) and len(circuit_data) > 0:
+            circuit = circuit_data[0]
+        else:
+            circuit = {}
+
+        circuit_id = circuit.get("circuitId", "")
+        circuit_name = circuit.get("circuitName", "")
+
+        rows = []
+        for result in race_meta.get("results", []):
+            driver = result.get("driver", {})
+            team = result.get("team", {})
+
+            # Position: convert to int; DNFs get 999
+            raw_pos = result.get("position")
+            try:
+                final_position = int(raw_pos)
+            except (TypeError, ValueError):
+                final_position = 999
+            
+            # DNF flag: retired field is a string like "Engine" or None
+            position = result.get("position")
+            is_dnf = 1 if position == "NC" else 0
+
+            # Grid position
+            raw_grid = result.get("grid", 0)
+            try:
+                grid_position = int(raw_grid)
+            except (TypeError, ValueError):
+                grid_position = 0
+
+            rows.append({
+                "year":             year,
+                "round":            round_num,
+                "race_id":          race_meta.get("raceId", ""),
+                "race_name":        race_meta.get("raceName", ""),
+                "circuit_id":       circuit_id,
+                "circuit_name":     circuit_name,
+                "date":             race_meta.get("date", ""),
+                "driver_id":        driver.get("driverId", ""),
+                "driver_name":      f"{driver.get('name', '')} {driver.get('surname', '')}".strip(),
+                "constructor_id":   team.get("teamId", ""),
+                "constructor_name": team.get("teamName", ""),
+                "grid_position":    grid_position,
+                "final_position":   final_position,
+                "points":           float(result.get("points", 0)),
+                "dnf":              is_dnf,
+            })
+
+        time.sleep(0.3)
+        return rows
         
     def fetch_qualifying(self, year: int, round_num: int) -> List[Dict]:
-        url = f"{self.BASE_URL}/{year}/{round_num}/qualifying.json"
-
-        try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status() # Raise error if status != 200
-            data = response.json()
-
-            results = data.get('MRData', {}).get('RaceTable', {}).get('Races', [{}])[0].get('QualifyingResults', [])
-
-            time.sleep(0.3)
-            return results
-        
-        except Exception as e:
-            print(f"Error fetching qualifying for {year} round {round_num}: {e}")
+        data = self._get(f"{year}/{round_num}/qualy", {"limit": 30})
+        if not data or "races" not in data:
             return []
         
-    def fetch_driver_standings(self, year: int) -> pd.DataFrame:
-        url = f"{self.BASE_URL}/{year}/driverStandings.json"
+        rows = []
+        for entry in data["races"].get("qualyResults", []):
+            driver = entry.get("driver", {})
+            team = entry.get("team", {})
 
-        try: 
-            response = requests.get(url, timeout=10)
-            response.raise_for_status() # Raise error if status != 200
-            data = response.json()
+            raw_grid = entry.get("gridPosition", 0)
+            try:
+                grid_pos = int(raw_grid)
+            except (TypeError, ValueError):
+                grid_pos = 0
 
-            standings = data.get('MRData', {}).get('StandingsTable', {}).get('StandingsLists', [{}])[0].get('DriverStandings', [])
-            
-            standings_list = []
-            for standing in standings:
-                driver = standing.get('Driver', {})
-                standings_list.append({
-                    'driverId': driver.get('driverId'),
-                    'position': int(standing.get('position')),
-                    'points': float(standing.get('points')),
-                    'wins': int(standing.get('wins')),
-                })
+            rows.append({
+                "year":           year,
+                "round":          round_num,
+                "driver_id":      driver.get("driverId", entry.get("driverId", "")),
+                "constructor_id": team.get("teamId", entry.get("teamId", "")),
+                "grid_position":  grid_pos,
+                "q1":             entry.get("q1"),
+                "q2":             entry.get("q2"),
+                "q3":             entry.get("q3"),
+            })
 
-            time.sleep(0.3)
-            return pd.DataFrame(standings_list)
+        time.sleep(0.3)
+        return rows
         
-        except Exception as e:
-            print(f"Error fetching driver standings for {year}: {e}")
+    def fetch_driver_standings(self, year: int) -> pd.DataFrame:
+        data = self._get(f"{year}/driver-championship", {"limit": 30})
+        if not data or "drivers-championship" not in data:
             return pd.DataFrame()
+
+        rows = []
+        for entry in data["drivers-championship"]:
+            driver = entry.get("driver", {})
+            rows.append({
+                "year": year,
+                "driver_id":      entry.get("driverId", ""),
+                "driver_name":    f"{driver.get('name', '')} {driver.get('surname', '')}".strip(),
+                "constructor_id": entry.get("teamId", ""),
+                "position":       entry.get("position"),
+                "season_points":  float(entry.get("points", 0)),
+                "season_wins":    int(entry.get("wins", 0)),
+            })
+
+        time.sleep(0.3)
+        return pd.DataFrame(rows)
         
     def build_race_dataset(self) -> pd.DataFrame:
-        print("Fetching all races...")
-        races_df = self.fetch_races() # Get list of all races
+        all_rows = []
 
-        all_results = []
+        for year in range(self.start_year, self.end_year + 1):
+            max_rounds = self.rounds_per_year.get(year, 23)
+            print(f"\n{year} ({max_rounds} rounds)")
 
-        for _, race in races_df.iterrows():
-            year = int(race['year'])
-            round_num = int(race['round'])
-
-            print(f"Fetching results for {year} R{round_num}...", end=' ')
-
-            results = self.fetch_results(year, round_num)
-            qualifying = self.fetch_qualifying(year, round_num)
-
-            quali_pos = {}
-            for q_result in qualifying:
-                quali_pos[q_result('Driver', {}).get('driverId')] = int(q_result.get('position', 0))
-
-            for result in results:
-                driver = result.get('Driver', {})
-                constructor = result.get('Constructor', {})
-
-                # Determine if DNF
-                # Status can be "Finished", "+1 Lap", "Crashed", "Engine", etc.
-
-                status = result.get('status', '')
-                is_dnf = 1 if status not in ['Finished', '+1 Lap', '+2 Laps', '+3 Laps'] else 0
-
-                all_results.append({
-                    'year': year,
-                    'round': round_num,
-                    'race_name': race['name'],
-                    'circuit': race['circuit'],
-                    'driverId': driver.get('driverId'),
-                    'driverName': f"{driver.get('givenName', '')} {driver.get('familyName', '')}",
-                    'constructorId': constructor.get('constructorId'),
-                    'constructorName': constructor.get('name'),
-                    'grid_position': int(result.get('grid', 0)) or 0,
-                    'final_position': int(result.get('position', 999)) if result.get('position') != '\\N' else 999,
-                    'points': float(result.get('points', 0)),
-                    'dnf': is_dnf,
-                })
-
-                print (f"✓")
-
-            print(f"\nCreated dataset with {len(all_results)} rows (driver-race combinations)")
-            return pd.DataFrame(all_results)
+            for round_num in range(1, max_rounds + 1):
+                print(f"  R{round_num:02d}...", end=" ", flush=True)
+                rows = self.fetch_race_results(year, round_num)
+                if rows:
+                    all_rows.extend(rows)
+                    print(f"({len(rows)} drivers)")
+                else:
+                    print("---")
+            
+        df = pd.DataFrame(all_rows)
+        print(f"\nTotal rows fetched: {len(df)}")
+        return df
         
 class FeatureEngineer:
     @staticmethod
-    def add_driver_history_features(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.sort_values(['driverId', 'year', 'round']).reset_index(drop=True)
+    def add_driver_features(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.sort_values(['driver_id', 'year', 'round']).reset_index(drop=True)
+
+        grp = df.groupby("driver_id")
 
         # Feature 1: 5-race rolling average of points
-        df['driver_points_5race_avg'] = (
-            df.groupby('driverId')['points']
-            .shift(1)
-            .rolling(window=5, min_periods=1)
-            .mean()
-            .reset_index(0, drop=True)
+        df["driver_points_5race_avg"] = (
+            grp["points"].transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
         )
 
         # Feature 2: 10-race rolling average of points
-        df['driver_points_10race_avg'] = (
-            df.groupby('driverId')['points']
-            .shift(1)
-            .rolling(window=10, min_periods=1)
-            .mean()
-            .reset_index(0, drop=True)
+        df["driver_points_10race_avg"] = (
+            grp["points"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
         )
 
         # Feature 3: 5-race finish rate
-        df['driver_finish_rate_5race'] = (
-            1 - df.groupby('driverId')['dnf']
-            .shift(1)
-            .rolling(window=5, min_periods=1)
-            .mean()
-            .reset_index(0, drop=True)
+        df["driver_finish_rate_5race"] = (
+            grp["dnf"].transform(lambda s: 1 - s.shift(1).rolling(5, min_periods=1).mean())
         )
 
         # Feature 4: Average grid position (5 races)
-        df['driver_grid_avg_5race'] = (
-            df.groupby('driverId')['grid_position']
-            .shift(1)
-            .rolling(window=5, min_periods=1)
-            .mean()
-            .reset_index(0, drop=True)
+        df["driver_grid_avg_5race"] = (
+            grp["grid_position"].transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
         )
 
         # Feature 5: Career wins (cumulative count)
-        df['driver_career_wins'] = (
-            df.groupby('driverId')
-            .apply(lambda x: (x['final_position'] == 1).cumsum().shift(1))
-            .reset_index(0, drop=True)
-        )
+        df["_win"] = (df["final_position"] == 1).astype(int)
+        df["driver_career_wins"] = grp["_win"].transform(lambda s: s.shift(1).cumsum()).fillna(0)
+        df.drop(columns=["_win"], inplace=True)
 
         # Feature 6: Total races completed by driver
-        df['driver_races_completed'] = df.groupby('driverId').cumcount()
+        df['driver_races_completed'] = grp.cumcount()
 
         # Fill NaN values with 0 (first race will have no history)
         return df.fillna(0)
     
     @staticmethod
     def add_constructor_features(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.sort_values(['constructorId', 'year', 'round']).reset_index(drop=True)
+        df = df.sort_values(['constructor_id', 'year', 'round']).reset_index(drop=True)
+        grp = df.groupby("constructor_id")
 
         # Feature 7: Team's 5-race average points
-        df['constructor_points_5race_avg'] = (
-            df.groupby('constructorId')['points']
-            .shift(1)
-            .rolling(window=5, min_periods=1)
-            .mean()
-            .reset_index(0, drop=True)
+        df["constructor_points_5race_avg"] = (
+           grp["points"].transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
         )
 
         # Feature 8: Team's 5-race DNF rate
-        df['constructor_dnf_rate_5race'] = (
-            df.groupby('constructorId')['dnf']
-            .shift(1)
-            .rolling(window=5, min_periods=1)
-            .mean()
-            .reset_index(0, drop=True)
+        df["constructor_dnf_rate_5race"] = (
+            grp["dnf"].transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
         )
 
         return df.fillna(0)
@@ -243,61 +222,57 @@ class FeatureEngineer:
     def add_circuit_features(df: pd.DataFrame) -> pd.DataFrame:
 
         # Calculate driver's historical average finish position at each circuit
-        circuit_driver_avg = (
-            df.groupby(['circuit', 'driverId'])['final_position']
+        circuit_avg = (
+            df.groupby(["circuit_id", "driver_id"])["final_position"]
             .mean()
             .reset_index()
+            .rename(columns={"final_position": "driver_circuit_avg_finish"})
         )
-        circuit_driver_avg.columns = ['circuit', 'driverId', 'driver_circuit_avg_finish']
-
         # Merge back to main dataframe
-        df = df.merge(circuit_driver_avg, on=['circuit', 'driverId'], how='left')
-
+        df = df.merge(circuit_avg, on=["circuit_id", "driver_id"], how="left")
         # For drivers with no history at a circuit, use default value 15 (mid-field)
-        df['driver_circuit_avg_finish'] = df['driver_circuit_avg_finish'].fillna(15)
-
+        df["driver_circuit_avg_finish"] = df["driver_circuit_avg_finish"].fillna(15)
         return df
     
     @staticmethod
-    def create_model_dataset(race_results_df: pd.DataFrame) -> pd.DataFrame:
-        df = race_results_df.copy()
+    def create_model_dataset(race_df: pd.DataFrame) -> pd.DataFrame:
+        df = race_df.copy()
 
-        print("Adding driver history features...")
-        df = FeatureEngineer.add_driver_history_features(df)
+        print("Engineering driver features...")
+        df = FeatureEngineer.add_driver_features(df)
 
-        print("Adding constructor features...")
+        print("Engineering constructor features...")
         df = FeatureEngineer.add_constructor_features(df)
 
-        print("Adding circuit features...")
+        print("Engineering circuit features...")
         df = FeatureEngineer.add_circuit_features(df)
 
         # Only keep rows where driver has completed at least 1 race
-        df = df[df['driver_races_completed'] > 0].copy()
-
-        print(f"Creating target variables...")
+        df = df[df["driver_races_completed"] > 0].copy()
 
         # TARGET 1: Classification target (Will driver score points?)
-        df['points_finish'] = (df['final_position'] <= 10).astype(int)
-
+        df["points_finish"] = (df["final_position"] <= 10).astype(int)
         # TARGET 2: Regression target (What position will driver finish?)
-        df['position_target'] = df['final_position'].clip(upper=20)
+        df["position_target"] = df["final_position"].clip(upper=20)
 
+        print(f"Final dataset: {len(df)} rows, {df['points_finish'].sum()} points finishes")
         return df
     
 def get_f1_data(start_year: int = 2015, end_year: int = 2025) -> pd.DataFrame:
     print("="*60)
-    print("F1 DATA PIPELINE")
+    print(f"F1 DATA PIPELINE ({start_year}-{end_year})")
     print("="*60)
-
-    print(f"\nFetching F1 data from Ergast API ({start_year}-{end_year})...")
 
     # Stage 1: Fetch raw data
     fetcher = F1DataFetcher(start_year=start_year, end_year=end_year)
     race_results = fetcher.build_race_dataset()
 
-    print(f"\n Fetched {len(race_results)} race results")
-    print(f"  Unique drivers: {race_results['driverId'].nunique()}")
-    print(f"  Unique constructors: {race_results['constructorId'].nunique()}")
+    if race_results.empty:
+        raise RuntimeError("No data fetched - check API connectivity")
+
+    print(f"\nFetched {len(race_results)} race result rows")
+    print(f"  Drivers:      {race_results['driver_id'].nunique()}")
+    print(f"  Constructors: {race_results['constructor_id'].nunique()}")
 
     # Stage 2: Engineer features
     print(f"\nEngineering features...")
@@ -315,16 +290,8 @@ if __name__ == "__main__":
     # Example: Run the data pipeline
     df = get_f1_data(start_year=2015, end_year=2025)
 
-    # Inspect the result
-    print("\nDataset preview:")
-    print(df.head())
-
-    print("\nFeature summary:")
+    print("\nSample:")
     print(df[[
-        'grid_position',
-        'driver_points_5race_avg',
-        'driver_points_10race_avg',
-        'driver_finish_rate_5race',
-        'driver_circuit_avg_finish',
-        'points_finish',
-    ]].describe())
+        "year", "round", "driver_name", "grid_position",
+        "driver_points_5race_avg", "points_finish",
+    ]].head(10))
