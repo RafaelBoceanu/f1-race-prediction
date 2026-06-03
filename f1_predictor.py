@@ -1,73 +1,61 @@
+import json
 import numpy as np
 import pandas as pd
-from f1_models import F1PredictionModel
 from typing import Dict, List
-import json
+
+from f1_models import F1PredictionModel, FEATURE_COLS
 
 class F1RacePredictor:
 
     def __init__(self, model_path: str = './models'):
-        self.model_manager = F1PredictionModel()
-        self.model_manager.load_models(model_path)
+        self.manager = F1PredictionModel()
+        self.manager.load_models(model_path)
 
     def predict_race(self, drivers_data: List[Dict]) -> Dict:
         predictions = []
 
         for driver in drivers_data:
-            features = np.array([
-                driver['grid_position'],
-                driver['driver_points_5race_avg'],
-                driver['driver_points_10race_avg'],
-                driver['driver_finish_rate_5race'],
-                driver['driver_grid_avg_5race'],
-                driver['driver_career_wins'],
-                driver['driver_races_completed'],
-                driver['constructor_points_5race_avg'],
-                driver['constructor_dnf_rate_5race'],
-                driver['driver_circuit_avg_finish'],
-            ])
+            features = np.array([driver.get(col, 0.0) for col in FEATURE_COLS], dtype=float)
 
-            points_pred = self.model_manager.predict_points_finish(features)
-            position_pred = self.model_manager.predict_position(features)
+            points_pred = self.manager.predict_points_finish(features)
+            position_pred = self.manager.predict_position(features)
 
             predictions.append({
-                'driver_name': driver['driver_name'],
-                'grid_position': driver['grid_position'],
-                'predicted_position': position_pred['predicted_position'],
-                'will_score_points': points_pred['will_finish_points'],
-                'points_probability': points_pred['probability'],
-                'confidence': points_pred['confidence'],
+                "driver_name":        driver.get("driver_name", "Unknown"),
+                "grid_position":      driver.get("grid_position"),
+                "predicted_position": position_pred["predicted_position"],
+                "will_score_points":  points_pred["will_finish_points"],
+                "points_probability": round(points_pred["probability"], 4),
+                "confidence":         round(points_pred["confidence"], 4),
+                '_raw_position':      position_pred['predicted_position'],
             })
 
-        predictions = sorted(predictions, key=lambda x: x['predicted_position'])
+        predictions.sort(key=lambda x: x['_raw_position'])
+
+        for i, pred in enumerate(predictions, 1):
+            pred['predicted_position'] = i
+            del pred['_raw_position']
 
         return {
             'predictions': predictions,
-            'timestamp': pd.Timestamp.now().isoformat(),
+            'timestamp':   pd.Timestamp.now().isoformat(),
         }
     
     def predict_podium(self, drivers_data: List[Dict]) -> List[str]:
-        race_pred = self.predict_race(drivers_data)
-        top_3 = race_pred['predictions'][:3]
-        return [driver['driver_name'] for driver in top_3]
+        result = self.predict_race(drivers_data)
+        return [d["driver_name"] for d in result["predictions"][:3]]
     
     def predict_points_finishers(self, drivers_data: List[Dict]) -> List[Dict]:
-        race_pred = self.predict_race(drivers_data)
-        points_finishers = [
-            d for d in race_pred['predictions']
-            if d['will_score_points']
-        ]
-        return points_finishers
+        result = self.predict_race(drivers_data)
+        return [d for d in result["predictions"] if d["predicted_position"] <= 10]
 
-    def export_predictions(self, predictions: Dict, filepath: str):
+    def export_predictions(self, predictions: Dict, filepath: str) -> None:
         with open(filepath, 'w') as f:
             json.dump(predictions, f, indend=2, default=str)
         print(f"Predictions saved to {filepath}")
 
-def example_prediction():
-    predictor = F1RacePredictor()
-
-    drivers = [
+def _example_grid() -> List[Dict]:
+    return [
         {
             'driver_name': 'Max Verstappen',
             'grid_position': 1,
@@ -120,29 +108,28 @@ def example_prediction():
             'constructor_dnf_rate_5race': 0.12,
             'driver_circuit_avg_finish': 4.2,
         },
-    ]
-
-    predictions = predictor.predict_race(drivers)
-
-    print("\n=== RACE PREDICTIONS ===\n")
-    for pred in predictions['predictions']:
-        print(f"{pred['grid_position']:2d} → {pred['predicted_position']:2d}  "
-              f"{pred['driver_name']:20s}  "
-              f"Points: {pred['points_probability']:5.1%}  "
-              f"Confidence: {pred['confidence']:.1%}")
-    
-    print("\n=== PREDICTED PODIUM ===")
-    podium = predictor.predict_podium(drivers)
-    for i, driver in enumerate(podium, 1):
-        print(f"{i}. {driver}")
-    
-    print("\n=== POINTS FINISHERS ===")
-    finishers = predictor.predict_points_finishers(drivers)
-    for driver in finishers:
-        print(f"  {driver['driver_name']:20s} (Pos {driver['predicted_position']})")
-    
-    predictor.export_predictions(predictions, './example_predictions.json')
- 
+    ] 
  
 if __name__ == '__main__':
-    example_prediction()
+    predictor = F1RacePredictor("./models")
+    drivers   = _example_grid()
+    result    = predictor.predict_race(drivers)
+
+    print("\n=== RACE PREDICTIONS ===\n")
+    for p in result["predictions"]:
+        print(
+            f"  Grid {p['grid_position']:2d} -> Pos {p['predicted_position']:2d}    "
+            f"{p['driver_name']:<22s}   "
+            f"Points: {p['points_probability']:5.1%%}   "
+            f"Conf: {p['confidence']:.1%}"
+        )
+    
+    print("\n=== PREDICTED PODIUM ===")
+    for i, name in enumerate(predictor.predict_podium(drivers), 1):
+        print(f"    {i}. {name}")
+    
+    print("\n=== POINTS FINISHERS ===")
+    for d in predictor.predict_points_finishers(drivers):
+        print(f"    {d['driver_name']:<22s} (P{d['predicted_position']})")
+
+    predictor.export_predictions(result, "./example.predictions.json")
