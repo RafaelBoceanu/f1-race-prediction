@@ -1,0 +1,27 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Models — too large for GitHub, regenerate with test_pipeline.py
+models/
+
+# Cache — regenerate with test_predict.py
+cache/
+
+# Outputs
+example_predictions.json
+
+# Environment
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
