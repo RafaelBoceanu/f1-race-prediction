@@ -129,32 +129,6 @@ quali = fetcher.fetch_qualifying(2026, 6)  # year, round number
 
 ---
 
-## Example Output
-
-```
-=== 2026 MONACO GP PREDICTION ===
-
-  Pred   Grid   Points%    Driver
-  ---------------------------------------------
-  P1     P4     95.6%      Lando Norris
-  P2     P7     84.0%      Oscar Piastri
-  P3     P6     97.9%      Lewis Hamilton
-  P4     P2     97.3%      Max Verstappen
-  P5     P3     82.5%      Charles Leclerc
-  P6     P5     74.1%      George Russell
-  P7     P11    51.4%      Liam Lawson
-  P8     P13    97.3%      Carlos Sainz
-  P9     P8     57.7%      Franco Colapinto
-  P10    P12    54.1%      Oliver Bearman
-
---- Predicted Podium ---
-  1. Lando Norris
-  2. Oscar Piastri
-  3. Lewis Hamilton
-```
-
----
-
 ## Data Source
 
 [f1api.dev](https://f1api.dev) — free, open source F1 data API. Replaces the deprecated Ergast API which was retired at the end of the 2024 season.
